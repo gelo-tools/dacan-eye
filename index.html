@@ -956,7 +956,7 @@
                 dataObj = result.posInventoryState;
             } else if (result.magrabiInventoryState) {
                 dataObj = result.magrabiInventoryState;
-                await chrome.storage.local.set({ 'posInventoryState': dataObj }); // migrate silently
+                await chrome.storage.local.set({ 'posInventoryState': dataObj }); 
             } else if (result.magrabiInventoryData) {
                 dataObj = { inventory: result.magrabiInventoryData, systemDataEncoded: true, hasWarnedNoSystemData: true, auditLog: [] };
             }
@@ -964,7 +964,7 @@
             const state = localStorage.getItem('posInventoryState') || localStorage.getItem('magrabiInventoryState');
             if (state) {
                 dataObj = JSON.parse(state);
-                localStorage.setItem('posInventoryState', JSON.stringify(dataObj)); // migrate silently
+                localStorage.setItem('posInventoryState', JSON.stringify(dataObj)); 
             } else {
                 const oldData = localStorage.getItem('magrabiInventoryData');
                 if (oldData) {
@@ -1172,15 +1172,7 @@
             let qtyRaw = "";
             let descRaw = "";
             let currentSloc = ""; 
-            let skuIndex = -1;
-            let uomIndex = -1;
-
-            for (let j = 0; j < cols.length; j++) {
-                let val = cols[j].trim();
-                if (val === "1000") { currentSloc = "1000"; has1000 = true; }
-                if (val === "4000") { currentSloc = "4000"; has4000 = true; }
-            }
-
+            
             if (!isFallbackMode) {
                 if (cols.length > Math.max(skuCol, qtyCol)) {
                     skuRaw = cols[skuCol];
@@ -1194,45 +1186,55 @@
                     }
                 }
             } else {
-                for (let j = 0; j < cols.length; j++) {
-                    let val = cols[j].trim().toUpperCase();
-                    if (val === 'EA' || val === 'PAK') { uomIndex = j; break; }
-                }
-
-                if (uomIndex !== -1 && uomIndex + 1 < cols.length) {
-                    qtyRaw = cols[uomIndex + 1];
-                } else if (cols.length >= 2) {
-                    qtyRaw = cols[cols.length - 1];
-                }
+                let possibleSkus = [];
+                let possibleSlocs = [];
+                let descParts = [];
 
                 for (let j = 0; j < cols.length; j++) {
                     let val = cols[j].trim();
+                    if (!val) continue;
+
                     if (val === "1000" || val === "2000" || val === "3000" || val === "4000") {
-                        if (j + 1 < cols.length) {
-                            skuRaw = cols[j + 1].trim();
-                            skuIndex = j + 1;
-                            break; 
-                        }
+                        possibleSlocs.push({val: val, index: j});
+                    }
+                    
+                    let valNoCommas = val.replace(/,/g, '');
+                    if (/^\d+$/.test(valNoCommas) && valNoCommas.length >= 4) {
+                        possibleSkus.push({val: valNoCommas, index: j});
                     }
                 }
 
-                if (!skuRaw) {
-                    let searchLimit = uomIndex !== -1 ? uomIndex : cols.length;
-                    for (let j = 0; j < searchLimit; j++) {
-                        let val = cols[j].trim();
-                        if (val === qtyRaw && searchLimit === cols.length) continue; 
-                        if (!/[a-zA-Z]/.test(val) && val.replace(/,/g, '').match(/^\d+$/) && val.length > 4) {
-                            skuRaw = val;
-                            skuIndex = j;
-                        }
+                if (possibleSlocs.length > 0) currentSloc = possibleSlocs[0].val;
+                if (currentSloc === "1000") has1000 = true;
+                if (currentSloc === "4000") has4000 = true;
+                
+                possibleSkus = possibleSkus.filter(s => s.val !== currentSloc);
+                if (possibleSkus.length > 0) skuRaw = possibleSkus[0].val;
+
+                let foundQtyIndex = -1;
+                for (let j = cols.length - 1; j >= 0; j--) {
+                    let val = cols[j].trim();
+                    let valNoCommas = val.replace(/,/g, '');
+                    
+                    if (val !== "" && !isNaN(valNoCommas)) {
+                        if (val === currentSloc && possibleSlocs.some(s => s.index === j)) continue; 
+                        if (valNoCommas === skuRaw && possibleSkus.some(s => s.index === j)) continue; 
+                        
+                        qtyRaw = valNoCommas;
+                        foundQtyIndex = j;
+                        break;
                     }
                 }
 
+                let skuIndex = possibleSkus.length > 0 ? possibleSkus[0].index : -1;
                 if (skuIndex !== -1) {
-                    let limit = uomIndex !== -1 ? uomIndex : cols.length - 1;
-                    if (limit > skuIndex) {
-                        descRaw = cols.slice(skuIndex + 1, limit).join(' ');
+                    for (let j = skuIndex + 1; j < cols.length; j++) {
+                        let val = cols[j].trim();
+                        if (j === foundQtyIndex) continue;
+                        if (val === currentSloc && possibleSlocs.some(s => s.index === j)) continue;
+                        descParts.push(val);
                     }
+                    descRaw = descParts.join(' ');
                 }
             }
 
@@ -1241,7 +1243,7 @@
                 qtyRaw = qtyRaw.trim();
                 if (descRaw) descRaw = descRaw.trim();
                 
-                if (/[a-zA-Z]/.test(skuRaw) || skuRaw.length <= 4) continue; 
+                if (/[a-zA-Z]/.test(skuRaw) || skuRaw.length < 4) continue; 
 
                 let sku = skuRaw.replace(/^0+/, '') || '0'; 
                 let qtyClean = qtyRaw.replace(/,/g, '');
@@ -1735,12 +1737,12 @@
         thead.appendChild(headerRow);
 
         let totalItems = filteredArray.length;
-        let totalPages = 1;
+        let totalPages = Math.ceil(totalItems / (itemsPerPage === 'All' ? totalItems || 1 : parseInt(itemsPerPage))) || 1;
+        
         let paginatedItems = filteredArray;
 
         if (itemsPerPage !== 'All') {
             let limit = parseInt(itemsPerPage);
-            totalPages = Math.ceil(totalItems / limit) || 1;
             if (currentPage > totalPages) currentPage = totalPages; 
             if (currentPage < 1) currentPage = 1;
             
@@ -1776,7 +1778,6 @@
                 diffColor = '#00aee0';
             }
 
-            // ---- SYSTEM QTY BREAKDOWN LOGIC ----
             let sysQtyHtml = '';
             let parts = [];
             let q1000 = item.sysQty1000 || 0;
